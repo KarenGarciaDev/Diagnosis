@@ -6,7 +6,7 @@ terraform {
     }
   }
   
-  # --- IMPORTANTE: PON TU BUCKET REAL AQUÍ ---
+  # --- IMPORTANTE: REVISA QUE TU BUCKET SIGA BIEN AQUÍ ---
   backend "s3" {
     bucket = "andy-terraform-estado-nuevo-2025" 
     key    = "terraform/state.tfstate"
@@ -42,16 +42,18 @@ resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main_vpc.id
 }
 
+# CAMBIO AQUÍ: Usamos 10.0.10.0 para evitar conflictos
 resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main_vpc.id
-  cidr_block              = "10.0.1.0/24"
+  cidr_block              = "10.0.10.0/24" 
   availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
 }
 
+# CAMBIO AQUÍ: Usamos 10.0.20.0 para evitar conflictos
 resource "aws_subnet" "public_b" {
   vpc_id                  = aws_vpc.main_vpc.id
-  cidr_block              = "10.0.2.0/24"
+  cidr_block              = "10.0.20.0/24"
   availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
 }
@@ -73,12 +75,12 @@ resource "aws_route_table_association" "b" {
   route_table_id = aws_route_table.public_rt.id
 }
 
-# --- 3. SECURITY GROUP (CORREGIDO: Sin puntos y coma) ---
+# --- 3. SECURITY GROUP ---
 resource "aws_security_group" "web_sg" {
   name   = "diagnosis-sg-final"
   vpc_id = aws_vpc.main_vpc.id
 
-  # Frontend (HTTP)
+  # Frontend
   ingress {
     from_port   = 80
     to_port     = 80
@@ -86,7 +88,7 @@ resource "aws_security_group" "web_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Backend (Puerto 1337)
+  # Backend
   ingress {
     from_port   = 1337
     to_port     = 1337
@@ -102,7 +104,7 @@ resource "aws_security_group" "web_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Base de Datos (Postgres)
+  # Base de Datos
   ingress {
     from_port   = 5432
     to_port     = 5432
@@ -110,7 +112,7 @@ resource "aws_security_group" "web_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Salida (Todo permitido)
+  # Salida
   egress {
     from_port   = 0
     to_port     = 0
@@ -121,7 +123,7 @@ resource "aws_security_group" "web_sg" {
 
 # --- 4. INSTANCIA DB ---
 resource "aws_instance" "db_instance" {
-  ami           = "ami-0c7217cdde317cfec" # Ubuntu 22.04 LTS
+  ami           = "ami-0c7217cdde317cfec" 
   instance_type = "t2.micro"
   subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
@@ -142,7 +144,6 @@ resource "aws_instance" "backend_instance" {
   subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
   
-  # Usamos el perfil de estudiante
   iam_instance_profile = "LabInstanceProfile"
   
   depends_on = [aws_instance.db_instance]
@@ -159,7 +160,6 @@ resource "aws_instance" "backend_instance" {
               systemctl start docker
               usermod -aG docker ubuntu
               
-              # Login y Run
               aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.us-east-1.amazonaws.com
               
               docker run -d --restart always -p 1337:1337 \
@@ -175,7 +175,6 @@ resource "aws_instance" "frontend_instance" {
   subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
   
-  # Usamos el perfil de estudiante
   iam_instance_profile = "LabInstanceProfile"
   
   tags = { Name = "Diagnosis-Frontend" }
@@ -190,7 +189,6 @@ resource "aws_instance" "frontend_instance" {
               systemctl start docker
               usermod -aG docker ubuntu
               
-              # Login y Run
               aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.us-east-1.amazonaws.com
               
               docker run -d --restart always -p 80:80 \
@@ -263,5 +261,5 @@ resource "aws_lb_listener" "back_listener" {
 # --- 8. OUTPUTS ---
 output "DNS_DEL_LOAD_BALANCER" {
   value = aws_lb.main_lb.dns_name
-  description = "Tu enlace final. Puerto 80=Web, 1337=CMS."
+  description = "Tu enlace final."
 }
