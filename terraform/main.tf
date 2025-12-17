@@ -18,49 +18,21 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# --- DATA: OBTENER ID DE LA CUENTA (Para las URLs de ECR) ---
 data "aws_caller_identity" "current" {}
 
-# --- 1. IAM ROLES (¡VITAL! Para que EC2 pueda descargar de ECR) ---
-resource "aws_iam_role" "ec2_role" {
-  name = "diagnosis_ec2_role_v3"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "ecr_read" {
-  role       = aws_iam_role.ec2_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "diagnosis_ec2_profile_v3"
-  role = aws_iam_role.ec2_role.name
-}
-
-# --- 2. ECR REPOSITORIES ---
+# --- 1. ECR REPOSITORIES ---
 resource "aws_ecr_repository" "cms_repo" {
   name                 = "diagnosis-cms"
-  image_tag_mutability = "MUTABLE"
   force_delete         = true
 }
-
 resource "aws_ecr_repository" "web_repo" {
   name                 = "diagnosis-web"
-  image_tag_mutability = "MUTABLE"
   force_delete         = true
 }
 
-# --- 3. NETWORKING (VPC) ---
+# --- 2. RED (VPC) ---
 resource "aws_vpc" "main_vpc" {
   cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
   enable_dns_hostnames = true
   tags = { Name = "diagnosis-vpc" }
 }
@@ -69,10 +41,17 @@ resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main_vpc.id
 }
 
-resource "aws_subnet" "public_subnet" {
+resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main_vpc.id
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "us-east-1a"
+  map_public_ip_on_launch = true
+}
+
+resource "aws_subnet" "public_b" {
+  vpc_id                  = aws_vpc.main_vpc.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = "us-east-1b"
   map_public_ip_on_launch = true
 }
 
@@ -85,57 +64,31 @@ resource "aws_route_table" "public_rt" {
 }
 
 resource "aws_route_table_association" "a" {
-  subnet_id      = aws_subnet.public_subnet.id
+  subnet_id      = aws_subnet.public_a.id
+  route_table_id = aws_route_table.public_rt.id
+}
+resource "aws_route_table_association" "b" {
+  subnet_id      = aws_subnet.public_b.id
   route_table_id = aws_route_table.public_rt.id
 }
 
-# --- 4. SECURITY GROUP ---
+# --- 3. SECURITY GROUP ---
 resource "aws_security_group" "web_sg" {
-  name   = "diagnosis-sg"
+  name   = "diagnosis-sg-final"
   vpc_id = aws_vpc.main_vpc.id
 
-  # Frontend (Web)
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  # Backend API (Asumimos puerto 1337 o 3000, he puesto 1337)
-  ingress {
-    from_port   = 1337
-    to_port     = 1337
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  # SSH
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  # Base de Datos
-  ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  # Salida (Internet para descargar Docker)
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+  ingress { from_port = 80; to_port = 80; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
+  ingress { from_port = 1337; to_port = 1337; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
+  ingress { from_port = 22; to_port = 22; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
+  ingress { from_port = 5432; to_port = 5432; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
+  egress  { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
 }
 
-# --- 5. INSTANCIA 1: BASE DE DATOS ---
+# --- 4. INSTANCIA DB ---
 resource "aws_instance" "db_instance" {
   ami           = "ami-0c7217cdde317cfec" # Ubuntu 22.04 LTS
   instance_type = "t2.micro"
-  subnet_id     = aws_subnet.public_subnet.id
+  subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
   
   tags = { Name = "Diagnosis-DB" }
@@ -144,21 +97,19 @@ resource "aws_instance" "db_instance" {
               #!/bin/bash
               apt-get update
               apt-get install -y postgresql postgresql-contrib
-              # Configuración extra de DB aquí si fuera necesaria
               EOF
 }
 
-# --- 6. INSTANCIA 2: BACKEND (CMS) ---
+# --- 5. INSTANCIA BACKEND ---
 resource "aws_instance" "backend_instance" {
   ami           = "ami-0c7217cdde317cfec"
   instance_type = "t2.micro"
-  subnet_id     = aws_subnet.public_subnet.id
+  subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
   
-  # Asignamos el perfil IAM para poder descargar de ECR
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+  # CORRECCIÓN: Usamos el perfil que ya existe en AWS Academy
+  iam_instance_profile = "LabInstanceProfile"
   
-  # Dependencia explicita: Esperar a que la DB exista
   depends_on = [aws_instance.db_instance]
 
   tags = { Name = "Diagnosis-Backend" }
@@ -170,30 +121,27 @@ resource "aws_instance" "backend_instance" {
               curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
               unzip awscliv2.zip
               ./aws/install
-
               systemctl start docker
-              systemctl enable docker
               usermod -aG docker ubuntu
-
-              # Login en ECR
+              
+              # Login y Run
               aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.us-east-1.amazonaws.com
-
-              # Correr Backend (Inyectando la IP de la Base de Datos)
+              
               docker run -d --restart always -p 1337:1337 \
                 -e DB_HOST=${aws_instance.db_instance.private_ip} \
-                -e DB_PORT=5432 \
                 ${data.aws_caller_identity.current.account_id}.dkr.ecr.us-east-1.amazonaws.com/diagnosis-cms:latest
               EOF
 }
 
-# --- 7. INSTANCIA 3: FRONTEND (WEB) ---
+# --- 6. INSTANCIA FRONTEND ---
 resource "aws_instance" "frontend_instance" {
   ami           = "ami-0c7217cdde317cfec"
   instance_type = "t2.micro"
-  subnet_id     = aws_subnet.public_subnet.id
+  subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
   
-  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+  # CORRECCIÓN: Usamos el perfil que ya existe en AWS Academy
+  iam_instance_profile = "LabInstanceProfile"
   
   tags = { Name = "Diagnosis-Frontend" }
 
@@ -204,32 +152,82 @@ resource "aws_instance" "frontend_instance" {
               curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
               unzip awscliv2.zip
               ./aws/install
-
               systemctl start docker
-              systemctl enable docker
               usermod -aG docker ubuntu
-
-              # Login en ECR
+              
+              # Login y Run
               aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.us-east-1.amazonaws.com
-
-              # Correr Frontend
+              
               docker run -d --restart always -p 80:80 \
                 ${data.aws_caller_identity.current.account_id}.dkr.ecr.us-east-1.amazonaws.com/diagnosis-web:latest
               EOF
 }
 
-# --- 8. OUTPUTS (Para que sepas las IPs al terminar) ---
-output "ip_frontend" {
-  value = aws_instance.frontend_instance.public_ip
-  description = "IP Publica para ver la pagina web"
+# --- 7. LOAD BALANCER ---
+resource "aws_lb" "main_lb" {
+  name               = "diagnosis-load-balancer"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.web_sg.id]
+  subnets            = [aws_subnet.public_a.id, aws_subnet.public_b.id]
 }
 
-output "ip_backend" {
-  value = aws_instance.backend_instance.public_ip
-  description = "IP Publica del Backend API"
+# Target Group para Frontend (Puerto 80)
+resource "aws_lb_target_group" "front_tg" {
+  name     = "tg-frontend"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main_vpc.id
+  health_check {
+    matcher = "200-499" # Acepta más códigos por si acaso
+  }
+}
+resource "aws_lb_target_group_attachment" "front_attach" {
+  target_group_arn = aws_lb_target_group.front_tg.arn
+  target_id        = aws_instance.frontend_instance.id
+  port             = 80
 }
 
-output "ip_db" {
-  value = aws_instance.db_instance.private_ip
-  description = "IP Privada de la base de datos"
+# Target Group para Backend (Puerto 1337)
+resource "aws_lb_target_group" "back_tg" {
+  name     = "tg-backend"
+  port     = 1337
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main_vpc.id
+  health_check {
+    matcher = "200-499"
+  }
+}
+resource "aws_lb_target_group_attachment" "back_attach" {
+  target_group_arn = aws_lb_target_group.back_tg.arn
+  target_id        = aws_instance.backend_instance.id
+  port             = 1337
+}
+
+# Listener: Puerto 80 va al FRONTEND
+resource "aws_lb_listener" "front_listener" {
+  load_balancer_arn = aws_lb.main_lb.arn
+  port              = "80"
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.front_tg.arn
+  }
+}
+
+# Listener: Puerto 1337 va al BACKEND
+resource "aws_lb_listener" "back_listener" {
+  load_balancer_arn = aws_lb.main_lb.arn
+  port              = "1337"
+  protocol          = "HTTP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.back_tg.arn
+  }
+}
+
+# --- 8. OUTPUTS ---
+output "DNS_DEL_LOAD_BALANCER" {
+  value = aws_lb.main_lb.dns_name
+  description = "Tu enlace final. Puerto 80=Web, 1337=CMS."
 }
