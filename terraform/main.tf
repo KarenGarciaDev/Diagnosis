@@ -6,7 +6,7 @@ terraform {
     }
   }
   
-  # --- TU BUCKET DE ESTADO ---
+  # --- IMPORTANTE: PON TU BUCKET REAL AQUÍ ---
   backend "s3" {
     bucket = "andy-terraform-estado-nuevo-2025" 
     key    = "terraform/state.tfstate"
@@ -25,6 +25,7 @@ resource "aws_ecr_repository" "cms_repo" {
   name                 = "diagnosis-cms"
   force_delete         = true
 }
+
 resource "aws_ecr_repository" "web_repo" {
   name                 = "diagnosis-web"
   force_delete         = true
@@ -72,16 +73,50 @@ resource "aws_route_table_association" "b" {
   route_table_id = aws_route_table.public_rt.id
 }
 
-# --- 3. SECURITY GROUP ---
+# --- 3. SECURITY GROUP (CORREGIDO: Sin puntos y coma) ---
 resource "aws_security_group" "web_sg" {
   name   = "diagnosis-sg-final"
   vpc_id = aws_vpc.main_vpc.id
 
-  ingress { from_port = 80; to_port = 80; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
-  ingress { from_port = 1337; to_port = 1337; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
-  ingress { from_port = 22; to_port = 22; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
-  ingress { from_port = 5432; to_port = 5432; protocol = "tcp"; cidr_blocks = ["0.0.0.0/0"] }
-  egress  { from_port = 0; to_port = 0; protocol = "-1"; cidr_blocks = ["0.0.0.0/0"] }
+  # Frontend (HTTP)
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Backend (Puerto 1337)
+  ingress {
+    from_port   = 1337
+    to_port     = 1337
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # SSH
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Base de Datos (Postgres)
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # Salida (Todo permitido)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
 # --- 4. INSTANCIA DB ---
@@ -107,7 +142,7 @@ resource "aws_instance" "backend_instance" {
   subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
   
-  # CORRECCIÓN: Usamos el perfil que ya existe en AWS Academy
+  # Usamos el perfil de estudiante
   iam_instance_profile = "LabInstanceProfile"
   
   depends_on = [aws_instance.db_instance]
@@ -140,7 +175,7 @@ resource "aws_instance" "frontend_instance" {
   subnet_id     = aws_subnet.public_a.id
   security_groups = [aws_security_group.web_sg.id]
   
-  # CORRECCIÓN: Usamos el perfil que ya existe en AWS Academy
+  # Usamos el perfil de estudiante
   iam_instance_profile = "LabInstanceProfile"
   
   tags = { Name = "Diagnosis-Frontend" }
@@ -172,14 +207,14 @@ resource "aws_lb" "main_lb" {
   subnets            = [aws_subnet.public_a.id, aws_subnet.public_b.id]
 }
 
-# Target Group para Frontend (Puerto 80)
+# Target Group Frontend
 resource "aws_lb_target_group" "front_tg" {
   name     = "tg-frontend"
   port     = 80
   protocol = "HTTP"
   vpc_id   = aws_vpc.main_vpc.id
   health_check {
-    matcher = "200-499" # Acepta más códigos por si acaso
+    matcher = "200-499"
   }
 }
 resource "aws_lb_target_group_attachment" "front_attach" {
@@ -188,7 +223,7 @@ resource "aws_lb_target_group_attachment" "front_attach" {
   port             = 80
 }
 
-# Target Group para Backend (Puerto 1337)
+# Target Group Backend
 resource "aws_lb_target_group" "back_tg" {
   name     = "tg-backend"
   port     = 1337
@@ -204,7 +239,7 @@ resource "aws_lb_target_group_attachment" "back_attach" {
   port             = 1337
 }
 
-# Listener: Puerto 80 va al FRONTEND
+# Listeners
 resource "aws_lb_listener" "front_listener" {
   load_balancer_arn = aws_lb.main_lb.arn
   port              = "80"
@@ -215,7 +250,6 @@ resource "aws_lb_listener" "front_listener" {
   }
 }
 
-# Listener: Puerto 1337 va al BACKEND
 resource "aws_lb_listener" "back_listener" {
   load_balancer_arn = aws_lb.main_lb.arn
   port              = "1337"
