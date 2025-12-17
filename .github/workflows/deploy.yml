@@ -7,14 +7,14 @@ on:
       - qa
 
 jobs:
-  # JOB 1: Create Infrastructure (ECR Repos, Servers, DB)
+  # TRABAJO 1: Crear Infraestructura (Terraform)
   terraform:
-    name: 'Provision Infrastructure'
+    name: '1. Provision Infrastructure'
     runs-on: ubuntu-latest
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }} # Vital para tu cuenta de estudiante
       AWS_REGION: 'us-east-1'
 
     steps:
@@ -29,10 +29,10 @@ jobs:
         run: terraform apply -auto-approve
         working-directory: ./terraform
 
-  # JOB 2: Build & Push Docker Images (Run AFTER Terraform)
+  # TRABAJO 2: Construir y Subir Docker (ECR)
   build-and-push:
-    name: 'Build and Push to ECR'
-    needs: terraform  # This is key: Wait for Terraform to finish!
+    name: '2. Build and Push to ECR'
+    needs: terraform  # Espera a que Terraform termine
     runs-on: ubuntu-latest
     env:
       AWS_REGION: us-east-1
@@ -67,3 +67,25 @@ jobs:
           REGISTRY=${{ steps.login-ecr.outputs.registry }}
           docker build -t $REGISTRY/$ECR_REPO_WEB:$IMAGE_TAG ./frontend
           docker push $REGISTRY/$ECR_REPO_WEB:$IMAGE_TAG
+
+  # TRABAJO 3: Actualizar EC2 (La pieza que faltaba)
+  deploy-to-ec2:
+    name: '3. Refresh EC2 Instances'
+    needs: build-and-push # Espera a que las imágenes nuevas estén listas
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Refresh ASG (Deploy)
+        run: |
+          # Esto obliga a AWS a rotar las instancias.
+          # Las nuevas instancias ejecutarán el UserData y descargarán el Docker nuevo.
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name diagnosis-asg \
+            --preferences '{"MinHealthyPercentage": 0, "InstanceWarmup": 60}'
